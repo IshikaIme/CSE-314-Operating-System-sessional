@@ -1,0 +1,812 @@
+diff --git a/.dir-locals.el b/.dir-locals.el
+old mode 100644
+new mode 100755
+diff --git a/.editorconfig b/.editorconfig
+old mode 100644
+new mode 100755
+diff --git a/.gdbinit.tmpl-riscv b/.gdbinit.tmpl-riscv
+old mode 100644
+new mode 100755
+diff --git a/.gitignore b/.gitignore
+old mode 100644
+new mode 100755
+diff --git a/LICENSE b/LICENSE
+old mode 100644
+new mode 100755
+diff --git a/Makefile b/Makefile
+old mode 100644
+new mode 100755
+index 39a99d7..39f876a
+--- a/Makefile
++++ b/Makefile
+@@ -132,6 +132,8 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_testticket\
++	$U/_testprocinfo\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+@@ -153,7 +155,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+ 	then echo "-gdb tcp::$(GDBPORT)"; \
+ 	else echo "-s -p $(GDBPORT)"; fi)
+ ifndef CPUS
+-CPUS := 3
++CPUS := 1
+ endif
+ 
+ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+diff --git a/README b/README
+old mode 100644
+new mode 100755
+diff --git a/kernel/bio.c b/kernel/bio.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/buf.h b/kernel/buf.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/console.c b/kernel/console.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/defs.h b/kernel/defs.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/elf.h b/kernel/elf.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/entry.S b/kernel/entry.S
+old mode 100644
+new mode 100755
+diff --git a/kernel/exec.c b/kernel/exec.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/fcntl.h b/kernel/fcntl.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/file.c b/kernel/file.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/file.h b/kernel/file.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/fs.c b/kernel/fs.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/fs.h b/kernel/fs.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/kernel.ld b/kernel/kernel.ld
+old mode 100644
+new mode 100755
+diff --git a/kernel/kernelvec.S b/kernel/kernelvec.S
+old mode 100644
+new mode 100755
+diff --git a/kernel/log.c b/kernel/log.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/main.c b/kernel/main.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/memlayout.h b/kernel/memlayout.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/param.h b/kernel/param.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/pipe.c b/kernel/pipe.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/plic.c b/kernel/plic.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/printf.c b/kernel/printf.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/proc.c b/kernel/proc.c
+old mode 100644
+new mode 100755
+index 959b778..b9fa8f1
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -5,7 +5,133 @@
+ #include "spinlock.h"
+ #include "proc.h"
+ #include "defs.h"
++#include "pstat.h"
+ 
++
++// #define SEED 12345
++// static unsigned long s1= SEED, s2= SEED, s3= SEED, b;
++// unsigned long random_at_most(void)
++// {
++//   b=(((s1 << 13) ^ s1) >> 19);
++//   s1= (((s1 & 4294967294) << 12) ^ b);
++//   b=(((s2 << 2) ^ s2) >> 25);
++//   s2= (((s2 & 4294967294) << 4) ^ b);
++//   b=(((s3 << 3) ^ s3) >> 11);
++//   s3= (((s3 & 4294967294) << 17) ^ b);
++//   return (s1 ^ s2 ^ s3);
++
++// }
++
++
++// volatile unsigned int seed = 1234;
++
++// void srand(unsigned int s)
++// {
++// seed = s;
++// }
++
++// double random_at_most(void)
++// {
++// unsigned int a = 1103515245;
++// unsigned int c = 12345;
++// unsigned int m = 2147483648; // 2^31
++// unsigned int x = seed++;
++// double rand_val = ((a * x + c) % m) / m;
++
++// return rand_val;
++// }
++
++
++#define N 624
++#define M 397
++#define MATRIX_A 0x9908b0df   /* constant vector a */
++#define UPPER_MASK 0x80000000 /* most significant w-r bits */
++#define LOWER_MASK 0x7fffffff /* least significant r bits */
++
++/* Tempering parameters */   
++#define TEMPERING_MASK_B 0x9d2c5680
++#define TEMPERING_MASK_C 0xefc60000
++#define TEMPERING_SHIFT_U(y)  (y >> 11)
++#define TEMPERING_SHIFT_S(y)  (y << 7)
++#define TEMPERING_SHIFT_T(y)  (y << 15)
++#define TEMPERING_SHIFT_L(y)  (y >> 18)
++
++#define RAND_MAX 0x7fffffff
++
++static unsigned long mt[N]; /* the array for the state vector  */
++static int mti=N+1; /* mti==N+1 means mt[N] is not initialized */
++
++/* initializing the array with a NONZERO seed */
++void
++sgenrand(unsigned long seed)
++{
++    /* setting initial seeds to mt[N] using         */
++    /* the generator Line 25 of Table 1 in          */
++    /* [KNUTH 1981, The Art of Computer Programming */
++    /*    Vol. 2 (2nd Ed.), pp102]                  */
++    mt[0]= seed & 0xffffffff;
++    for (mti=1; mti<N; mti++)
++        mt[mti] = (69069 * mt[mti-1]) & 0xffffffff;
++}
++
++int /* for integer generation */
++genrand()
++{
++    unsigned long y;
++    static unsigned long mag01[2]={0x0, MATRIX_A};
++    /* mag01[x] = x * MATRIX_A  for x=0,1 */
++
++    if (mti >= N) { /* generate N words at one time */
++        int kk;
++
++        if (mti == N+1)   /* if sgenrand() has not been called, */
++            sgenrand(4357); /* a default initial seed is used   */
++
++        for (kk=0;kk<N-M;kk++) {
++            y = (mt[kk]&UPPER_MASK)|(mt[kk+1]&LOWER_MASK);
++            mt[kk] = mt[kk+M] ^ (y >> 1) ^ mag01[y & 0x1];
++        }
++        for (;kk<N-1;kk++) {
++            y = (mt[kk]&UPPER_MASK)|(mt[kk+1]&LOWER_MASK);
++            mt[kk] = mt[kk+(M-N)] ^ (y >> 1) ^ mag01[y & 0x1];
++        }
++        y = (mt[N-1]&UPPER_MASK)|(mt[0]&LOWER_MASK);
++        mt[N-1] = mt[M-1] ^ (y >> 1) ^ mag01[y & 0x1];
++
++        mti = 0;
++    }
++  
++    y = mt[mti++];
++    y ^= TEMPERING_SHIFT_U(y);
++    y ^= TEMPERING_SHIFT_S(y) & TEMPERING_MASK_B;
++    y ^= TEMPERING_SHIFT_T(y) & TEMPERING_MASK_C;
++    y ^= TEMPERING_SHIFT_L(y);
++
++    // Strip off uppermost bit because we want a long,
++    // not an unsigned long
++    return y & RAND_MAX;
++}
++
++// Assumes 0 <= max <= RAND_MAX
++// Returns in the half-open interval [0, max]
++int random_at_most(int max) {
++  unsigned long
++    // max <= RAND_MAX < ULONG_MAX, so this is okay.
++    num_bins = (unsigned long) max + 1,
++    num_rand = (unsigned long) RAND_MAX + 1,
++    bin_size = num_rand / num_bins,
++    defect   = num_rand % num_bins;
++
++  int x;
++  do {
++   x = genrand();
++  }
++  // This is carefully written not to overflow
++  while (num_rand - defect <= (unsigned long)x);
++
++  // Truncated division is intentional
++  return x/bin_size;
++}
+ struct cpu cpus[NCPU];
+ 
+ struct proc proc[NPROC];
+@@ -26,6 +152,9 @@ extern char trampoline[]; // trampoline.S
+ // must be acquired before any p->lock.
+ struct spinlock wait_lock;
+ 
++
++
++
+ // Allocate a page for each process's kernel stack.
+ // Map it high in memory, followed by an invalid
+ // guard page.
+@@ -302,6 +431,10 @@ fork(void)
+   // Cause fork to return 0 in the child.
+   np->trapframe->a0 = 0;
+ 
++  np->timeslices=0;
++  np->originalTickets = p->originalTickets;
++  np->currentTickets = p->originalTickets;
++
+   // increment reference counts on open file descriptors.
+   for(i = 0; i < NOFILE; i++)
+     if(p->ofile[i])
+@@ -434,6 +567,94 @@ wait(uint64 addr)
+   }
+ }
+ 
++int settickets(int n)
++{
++  struct proc *p = myproc();
++
++  if(n<=0)
++  {
++    return -1;
++  }
++  else{
++    p->originalTickets= n;
++    p->currentTickets= n;
++    printf("PID : %d, ticket: %d\n" , p->pid, p->currentTickets );
++    return 1;
++  }
++
++}
++
++
++
++int getpinfo(uint64 procstate)
++{
++   
++    struct pstat pr;
++
++  
++    int i = 0;
++  
++    for (struct proc *p = proc; p < &proc[NPROC]; p++) {
++      acquire(&p->lock);
++      if(p->state!=UNUSED) {
++      pr.pid[i] = p->pid;
++      pr.inuse[i]=1;
++      pr.tickets_current[i]= p->currentTickets;
++      pr.tickets_original[i]=p->originalTickets;
++      pr.time_slices[i]= p->timeslices;
++
++      }
++      else
++      {
++        pr.inuse[i]=0;
++      }
++      i++;
++    release(&p->lock);
++    }
++ 
++    struct proc *p = myproc();
++    copyout(p->pagetable, procstate, (char*)&pr, sizeof(pr));
++    return 0;
++
++}
++
++int count_Total_lottery(void){
++  struct proc *p;
++  int ticket_count=0;
++
++//loop over process table and increment total tickets if a runnable process is found 
++  for(p = proc; p < &proc[NPROC]; p++)
++  {
++    if(p->state==RUNNABLE){
++      ticket_count+=p->currentTickets;
++    }
++  }
++  return ticket_count;          // returning total number of tickets for runnable processes
++}
++
++void reset_all_current_tickets(void){
++  struct proc *p;
++  for(p = proc; p < &proc[NPROC]; p++)
++  {
++      if((p->state==RUNNABLE)&&(p->currentTickets>0))
++        return;
++      
++  }
++
++    for(p = proc; p < &proc[NPROC]; p++)
++  {
++      if(p->state==RUNNABLE)
++        p->currentTickets= p->originalTickets;  
++      
++  }
++
++
++
++}
++
++int random_at_most(int); 
++int flag=0;
++
+ // Per-CPU process scheduler.
+ // Each CPU calls scheduler() after setting itself up.
+ // Scheduler never returns.  It loops, doing:
+@@ -446,27 +667,88 @@ scheduler(void)
+ {
+   struct proc *p;
+   struct cpu *c = mycpu();
+-  
++ 
+   c->proc = 0;
++
++  for(p = proc; p < &proc[NPROC]; p++) {
++      acquire(&p->lock);
++      p->originalTickets = 1;
++      p->currentTickets = p->originalTickets;
++      release(&p->lock);
++  }
++
++ 
++
++  
++  
++  int count = 0;
++  int golden_ticket = 0;
++  int total_no_tickets = 0;
++
+   for(;;){
+     // Avoid deadlock by ensuring that devices can interrupt.
+     intr_on();
+ 
++
+     for(p = proc; p < &proc[NPROC]; p++) {
+       acquire(&p->lock);
++    
++   
++      //resetting the variables to make scheduler start from the beginning of the process queue
++      golden_ticket = 0;
++      count = 0;
++      total_no_tickets = 0; 
++      reset_all_current_tickets();
++      
++
++      
++      //calculate Total number of tickets for runnable processes  
++      
++      total_no_tickets = count_Total_lottery();
++
++      //pick a random ticket from total available tickets
++      golden_ticket = random_at_most(total_no_tickets);
++
++    
++
+       if(p->state == RUNNABLE) {
+         // Switch to chosen process.  It is the process's job
+         // to release its lock and then reacquire it
+         // before jumping back to us.
++
++      if ((count + p->currentTickets) < golden_ticket){
++          count += p->currentTickets;
++          release(&p->lock);
++          continue;
++        }
++
++    
++
+         p->state = RUNNING;
+         c->proc = p;
++
++        if(p->currentTickets>0){
++            p->currentTickets--;
++        }
++        p->timeslices++;
++
+         swtch(&c->context, &p->context);
++    
++
++        //find the process which holds the lottery winning ticket 
++    
+ 
+         // Process is done running for now.
+         // It should have changed its p->state before coming back.
+         c->proc = 0;
++        release(&p->lock);
++        break;
++
+       }
++
++
+       release(&p->lock);
++      count=0;
+     }
+   }
+ }
+@@ -603,6 +885,7 @@ kill(int pid)
+   return -1;
+ }
+ 
++
+ void
+ setkilled(struct proc *p)
+ {
+diff --git a/kernel/proc.h b/kernel/proc.h
+old mode 100644
+new mode 100755
+index d021857..b60b408
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,10 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++
++
++  //adding extra fields for settickets
++  int originalTickets;
++  int currentTickets;
++  int timeslices; 
+ };
+diff --git a/kernel/pstat.h b/kernel/pstat.h
+new file mode 100755
+index 0000000..65f6c74
+--- /dev/null
++++ b/kernel/pstat.h
+@@ -0,0 +1,21 @@
++#ifndef _PSTAT_H_
++
++#define _PSTAT_H_
++
++#include "param.h"
++
++struct pstat {
++
++    int pid[NPROC]; // the process ID of each process
++
++    int inuse[NPROC]; // whether this slot of the process table is being used (1 or 0)
++
++    int tickets_original[NPROC]; // the number of tickets each process originally had
++
++    int tickets_current[NPROC]; // the number of tickets each process currently has
++
++    int time_slices[NPROC]; // the number of time slices each process has been scheduled
++
++};
++
++#endif // _PSTAT_H_
+\ No newline at end of file
+diff --git a/kernel/ramdisk.c b/kernel/ramdisk.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/sleeplock.c b/kernel/sleeplock.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/sleeplock.h b/kernel/sleeplock.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/spinlock.c b/kernel/spinlock.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/spinlock.h b/kernel/spinlock.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/start.c b/kernel/start.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/stat.h b/kernel/stat.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/string.c b/kernel/string.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/swtch.S b/kernel/swtch.S
+old mode 100644
+new mode 100755
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+old mode 100644
+new mode 100755
+index ed65409..49ed09a
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -7,6 +7,7 @@
+ #include "syscall.h"
+ #include "defs.h"
+ 
++
+ // Fetch the uint64 at addr from the current process.
+ int
+ fetchaddr(uint64 addr, uint64 *ip)
+@@ -101,6 +102,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_settickets(void);
++extern uint64 sys_getpinfo(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +129,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_settickets] sys_settickets,
++[SYS_getpinfo] sys_getpinfo,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+old mode 100644
+new mode 100755
+index bc5f356..7926b7f
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_settickets 22
++#define SYS_getpinfo 23
+diff --git a/kernel/sysfile.c b/kernel/sysfile.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+old mode 100644
+new mode 100755
+index 1de184e..8bbbe4d
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -5,6 +5,7 @@
+ #include "memlayout.h"
+ #include "spinlock.h"
+ #include "proc.h"
++#include "pstat.h"
+ 
+ uint64
+ sys_exit(void)
+@@ -89,3 +90,26 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++int settickets(int);
++
++uint64 
++sys_settickets(void)
++{
++  int ticket;
++  argint(0,&ticket);
++  return settickets(ticket);
++  
++}
++
++int getpinfo(struct pstat*);
++
++uint64 
++sys_getpinfo(void)
++{
++  printf("\n sysgetpinfo system call prints:\n");
++  struct pstat* procpstate;
++  argaddr(0, (uint64*) &procpstate);
++  return getpinfo(procpstate);
++
++}
+diff --git a/kernel/trampoline.S b/kernel/trampoline.S
+old mode 100644
+new mode 100755
+diff --git a/kernel/trap.c b/kernel/trap.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/types.h b/kernel/types.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/uart.c b/kernel/uart.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/virtio.h b/kernel/virtio.h
+old mode 100644
+new mode 100755
+diff --git a/kernel/virtio_disk.c b/kernel/virtio_disk.c
+old mode 100644
+new mode 100755
+diff --git a/kernel/vm.c b/kernel/vm.c
+old mode 100644
+new mode 100755
+diff --git a/mkfs/mkfs.c b/mkfs/mkfs.c
+old mode 100644
+new mode 100755
+diff --git a/user/cat.c b/user/cat.c
+old mode 100644
+new mode 100755
+diff --git a/user/echo.c b/user/echo.c
+old mode 100644
+new mode 100755
+diff --git a/user/forktest.c b/user/forktest.c
+old mode 100644
+new mode 100755
+diff --git a/user/grep.c b/user/grep.c
+old mode 100644
+new mode 100755
+diff --git a/user/grind.c b/user/grind.c
+old mode 100644
+new mode 100755
+diff --git a/user/init.c b/user/init.c
+old mode 100644
+new mode 100755
+diff --git a/user/initcode.S b/user/initcode.S
+old mode 100644
+new mode 100755
+diff --git a/user/kill.c b/user/kill.c
+old mode 100644
+new mode 100755
+diff --git a/user/ln.c b/user/ln.c
+old mode 100644
+new mode 100755
+diff --git a/user/ls.c b/user/ls.c
+old mode 100644
+new mode 100755
+diff --git a/user/mkdir.c b/user/mkdir.c
+old mode 100644
+new mode 100755
+diff --git a/user/printf.c b/user/printf.c
+old mode 100644
+new mode 100755
+diff --git a/user/rm.c b/user/rm.c
+old mode 100644
+new mode 100755
+diff --git a/user/sh.c b/user/sh.c
+old mode 100644
+new mode 100755
+diff --git a/user/stressfs.c b/user/stressfs.c
+old mode 100644
+new mode 100755
+diff --git a/user/testprocinfo.c b/user/testprocinfo.c
+new file mode 100755
+index 0000000..673ac0e
+--- /dev/null
++++ b/user/testprocinfo.c
+@@ -0,0 +1,22 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/pstat.h"
++#include "user/user.h"
++
++
++int
++main(int argc, char *argv[])
++{
++  struct pstat ps;
++  getpinfo(&ps);
++  printf("PID | In Use | Original Tickets | Current Tickets | Time Slices\n");
++    for(int i =0; i< NPROC; i++)
++     {
++      if(ps.inuse[i]==1){
++          printf("    %d    |    %d    |    %d      |      %d     |      %d  \n" , ps.pid[i], ps.inuse[i] , ps.tickets_original[i], ps.tickets_current[i], ps.time_slices[i]   );
++    }
++     }
++
++  exit(0);
++}
++
+diff --git a/user/testticket.c b/user/testticket.c
+new file mode 100755
+index 0000000..5d6466f
+--- /dev/null
++++ b/user/testticket.c
+@@ -0,0 +1,33 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++
++    int NoOfTickets;
++    if(argc<2)
++    {
++        printf("Invalid number of arguments found ");
++        exit(0);
++    }
++    else
++    {
++        NoOfTickets= atoi(argv[1]); 
++    }
++
++
++    settickets(NoOfTickets);
++
++    if (fork() == 0)
++    {
++
++        while (1)
++        {
++            /* code */
++        }
++    }
++    else
++        exit(0);
++}
+diff --git a/user/ulib.c b/user/ulib.c
+old mode 100644
+new mode 100755
+diff --git a/user/umalloc.c b/user/umalloc.c
+old mode 100644
+new mode 100755
+diff --git a/user/user.h b/user/user.h
+old mode 100644
+new mode 100755
+index 4d398d5..3033b10
+--- a/user/user.h
++++ b/user/user.h
+@@ -1,4 +1,6 @@
+ struct stat;
++struct pstat;
++
+ 
+ // system calls
+ int fork(void);
+@@ -22,6 +24,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int settickets(int);
++int getpinfo(struct pstat*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/user.ld b/user/user.ld
+old mode 100644
+new mode 100755
+diff --git a/user/usertests.c b/user/usertests.c
+old mode 100644
+new mode 100755
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..e4cd2ca 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("settickets");
++entry("getpinfo")
+\ No newline at end of file
+diff --git a/user/wc.c b/user/wc.c
+old mode 100644
+new mode 100755
+diff --git a/user/zombie.c b/user/zombie.c
+old mode 100644
+new mode 100755

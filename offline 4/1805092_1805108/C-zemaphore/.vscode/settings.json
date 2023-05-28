@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "zemaphore.h": "c",
+        "signal.h": "c",
+        "errno.h": "c",
+        "string.h": "c"
+    }
+}
